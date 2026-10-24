@@ -1,6 +1,56 @@
 package com.lumi2021.urna.application;
 
+//EM CONSTRUÇÃO
+
+import java.time.LocalDateTime;
+
 public class BallotBox {
+
+
+    private String municipality; //Municipio em que a Urna será utilizada.
+    private int municipalityCode; //Código do municipio no qual a urna será usada.
+    private LocalDateTime openingDateTime; //Local, data e hora do inicio da votação.
+    private LocalDateTime closingDataTime = LocalDateTime.now(); //Local, data e hora do encerramento da votação.
+    private int electoralZone; //Zona eleitoral em que a urna será usada.
+    private int section; //Seção eleitoral onde a urna será usada.
+    private int eligibleVoters; //Quantidade total de votos elegiveis.
+
+
+    public void initialize(
+            String municipality,
+            int municipalityCode,
+            LocalDateTime openingDateTime,
+            LocalDateTime closingDataTime,
+            int electoralZon,
+            int section,
+            int eligibleVoters
+            ) {
+
+    }
+
+    public String getMunicipality(){
+        return municipality;
+    }
+
+    public int getMunicipalityCode(){
+        return municipalityCode;
+    }
+
+    public LocalDateTime getOpeningDateTime() {
+        return openingDateTime;
+    }
+
+    public int getElectoralZone(){
+        return electoralZone;
+    }
+
+    public int getSection(){
+        return section;
+    }
+
+    public int getEligibleVoters(){
+        return eligibleVoters;
+    }
 
     public String emitBulletin(){
         var sb = new StringBuilder();
