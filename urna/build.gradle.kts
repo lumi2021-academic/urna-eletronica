@@ -14,16 +14,15 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 
-    // javalin 7.0 tem uma API muito cursed
     implementation("io.javalin:javalin:6.7.0")
     runtimeOnly("org.slf4j:slf4j-simple:2.0.16")
 
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.18.3")
 }
 
 tasks.test {
     useJUnitPlatform()
 }
-
 tasks.register<JavaExec>("run") {
     group = "application"
     description = "Executa o programa principal"

@@ -1,3 +1,3 @@
 rootProject.name = "urna"
 
-includeBuild("../tools/firebase-importador")
+include("firebase-backend", "firebase-importador")
