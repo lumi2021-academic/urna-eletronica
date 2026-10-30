@@ -4,22 +4,12 @@
   <component name="GradleSettings">
     <option name="linkedExternalProjectsSettings">
       <GradleProjectSettings>
-        <compositeConfiguration>
-          <compositeBuild compositeDefinitionSource="SCRIPT">
-            <builds>
-              <build path="$PROJECT_DIR$/../tools/firebase-importador" name="firebase-importador">
-                <projects>
-                  <project path="$PROJECT_DIR$/../tools/firebase-importador" />
-                </projects>
-              </build>
-            </builds>
-          </compositeBuild>
-        </compositeConfiguration>
         <option name="externalProjectPath" value="$PROJECT_DIR$" />
         <option name="modules">
           <set>
-            <option value="$PROJECT_DIR$/../tools/firebase-importador" />
             <option value="$PROJECT_DIR$" />
+            <option value="$PROJECT_DIR$/firebase-backend" />
+            <option value="$PROJECT_DIR$/firebase-importador" />
           </set>
         </option>
         <option name="myGradleHome" value="" />
