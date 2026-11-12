@@ -227,11 +227,11 @@ public final class VotingServer {
 
     // ==================== PROCESSAMENTO DE VOTAÇÃO E SESSÃO ====================
 
-    public synchronized void iniciarSessaoEleitoral() throws Exception {
+    public synchronized void iniciarSessaoEleitoral(String eleicaoID) throws Exception {
         if (currentUrnaSession != null) return;
 
         try {
-            gateway.abrirEleicao("test");
+            gateway.abrirEleicao(eleicaoID);
             String sessionId = gateway.abrirSessao();
             this.currentUrnaSession = new Session(sessionId, null);
             System.out.println("Sessão eleitoral iniciada no gateway com ID: " + sessionId);

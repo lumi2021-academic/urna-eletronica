@@ -116,7 +116,7 @@ public class Program {
                 bulletinView.setVisible(true);
 
                 try {
-                    votingServer.iniciarSessaoEleitoral();
+                    votingServer.iniciarSessaoEleitoral(firebase.eleicaoId());
                 } catch (Exception e) {
                     throw new RuntimeException(e);
                 }
