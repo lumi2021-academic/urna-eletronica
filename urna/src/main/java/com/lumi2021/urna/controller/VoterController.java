@@ -1,292 +1,211 @@
 package com.lumi2021.urna.controller;
 
 import com.lumi2021.urna.application.VotingServer;
-import com.lumi2021.urna.application.VotingServer.RejectedException;
-import com.lumi2021.urna.application.VotingServer.Session;
+import com.lumi2021.urna.audio.SoundEffects;
+import com.lumi2021.urna.audio.UrnaSound;
 import com.lumi2021.urna.domain.models.CandidateEntity;
 import com.lumi2021.urna.infra.firebase.VotoRequest;
 import com.lumi2021.urna.view.models.VotingScreenModel;
 
-import javax.swing.SwingUtilities;
-import javax.swing.Timer;
-import java.util.concurrent.Executor;
+import java.time.Duration;
+import java.util.Optional;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
-/**
- * Terminal do eleitor ("VotingTerminal" do diagrama): tela de vereador, tela de prefeito,
- * confirmação e tela FIM. Todos os métodos públicos devem ser chamados na thread da interface.
- */
 public class VoterController {
 
-    public enum State { IDLE, VEREADOR, PREFEITO, SUBMITTING, FINISHED }
+    public static final Duration DEFAULT_CONFIRM_DELAY = Duration.ofSeconds(1);
 
-    /** Notificações para o terminal do mesário (resposta "Notifica conclusão"). */
-    public interface Listener {
-        void onVoteCompleted();
-        void onVoteFailed(String message);
-    }
-
-    private static final int FINISH_SCREEN_MILLIS = 3000;
-    private static final int VEREADOR_DIGITS = 5;
-    private static final int PREFEITO_DIGITS = 2;
+    private static final ScheduledExecutorService UNLOCK_TIMER = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "confirm-unlock");
+        t.setDaemon(true);
+        return t;
+    });
 
     private final VotingServer server;
-    private final Executor background;
-    private final Executor ui;
+    private final Duration confirmDelay;
+    private volatile SoundEffects sounds = SoundEffects.NONE;
+    private long lockedUntilNanos = 0;
+    private boolean confirmableShown = false;
+    private String currentCargo = VotingServer.VEREADOR;
+    private final StringBuilder digits = new StringBuilder();
 
-    private Consumer<VotingScreenModel> display = model -> { };
-    private Listener listener;
-
-    private State state = State.IDLE;
-    private Session session;
     private VotoRequest vereadorVote;
 
-    // Entrada em andamento no cargo atual
-    private final StringBuilder digits = new StringBuilder();
-    private boolean blank;
-    private String partyName;
-    private CandidateEntity candidate;
-
-    private Timer finishTimer;
+    private CandidateEntity currentCandidate;
+    private boolean isBlankVote = false;
 
     public VoterController(VotingServer server) {
-        this(server, Executors.newSingleThreadExecutor(r -> {
-            Thread t = new Thread(r, "voting-server-io");
-            t.setDaemon(true);
-            return t;
-        }), SwingUtilities::invokeLater);
+        this(server, DEFAULT_CONFIRM_DELAY);
     }
 
-    /** Construtor com executores injetados (usado nos testes). */
-    public VoterController(VotingServer server, Executor background, Executor ui) {
+    public VoterController(VotingServer server, Duration confirmDelay) {
         this.server = server;
-        this.background = background;
-        this.ui = ui;
+        this.confirmDelay = confirmDelay;
     }
 
-    public void setDisplay(Consumer<VotingScreenModel> display) {
-        this.display = display;
-        render();
+    public void setSounds(SoundEffects sounds) {
+        this.sounds = sounds == null ? SoundEffects.NONE : sounds;
     }
 
-    public void setListener(Listener listener) {
-        this.listener = listener;
+    public void setDisplay(Consumer<VotingScreenModel> listener) {
+        server.setVoterResetListener(this::reset);
+        server.setVoterScreenListener(model -> {
+            if (model instanceof VotingScreenModel.Finished) sounds.play(UrnaSound.FIM);
+            listener.accept(model);
+        });
     }
 
-    public State state() {
-        return state;
-    }
-
-    // ================================================================ liberação
-
-    /** "Liberação": o servidor libera o terminal para um eleitor. Mostra a tela de vereador. */
-    public void release(Session newSession) {
-        stopFinishTimer();
-        session = newSession;
-        vereadorVote = null;
-        state = State.VEREADOR;
-        resetEntry();
-        render();
-    }
-
-    /**
-     * Cancela uma liberação ainda não confirmada pelo eleitor.
-     *
-     * @return false se não é mais possível cancelar (voto já enviado ao servidor)
-     */
-    public boolean cancelRelease() {
-        if (state == State.SUBMITTING) {
-            return false;
-        }
-        if (state == State.VEREADOR || state == State.PREFEITO) {
-            server.cancelSession(session);
-            session = null;
+    public void reset() {
+        synchronized (server) {
+            currentCargo = VotingServer.VEREADOR;
             vereadorVote = null;
-            state = State.IDLE;
-            resetEntry();
-            render();
+            resetCargoState();
         }
-        return true;
     }
 
-    // ================================================================ teclas
+    public void digit(int digit) {
+        synchronized (server) {
+            if (!server.isVoterActive()) return;
 
-    public void digit(int d) {
-        if (!isEntryState() || blank || d < 0 || d > 9) return;
-        if (digits.length() >= digitsNeeded()) return;
-        digits.append(d);
-        lookup();
-        render();
+            if (digits.length() < getTargetDigitCount() && !isBlankVote) {
+                sounds.play(UrnaSound.TECLA);
+                digits.append(digit);
+                evaluateInput();
+            }
+        }
     }
 
     public void blank() {
-        if (!isEntryState() || digits.length() > 0) return;
-        blank = true;
-        render();
+        synchronized (server) {
+            if (!server.isVoterActive()) return;
+
+            if (digits.isEmpty()) {
+                sounds.play(UrnaSound.TECLA);
+                isBlankVote = true;
+                currentCandidate = null;
+                publishCurrentState();
+            }
+        }
     }
 
     public void correct() {
-        if (!isEntryState()) return;
-        resetEntry();
-        render();
+        synchronized (server) {
+            if (!server.isVoterActive()) return;
+
+            if (!digits.isEmpty()) {
+                sounds.play(UrnaSound.TECLA);
+                digits.setLength(0);
+                currentCandidate = null;
+                isBlankVote = false;
+                publishCurrentState();
+            }
+            else if (isBlankVote) {
+                sounds.play(UrnaSound.TECLA);
+                isBlankVote = false;
+                publishCurrentState();
+            }
+        }
     }
 
     public void confirm() {
-        if (!isEntryState()) return;
+        synchronized (server) {
+            if (!server.isVoterActive()) return;
 
-        String cargo = currentCargo();
-        VotoRequest vote;
-        if (blank) {
-            vote = new VotoRequest(cargo, "BRANCO", null);
-        } else if (digits.length() == digitsNeeded()) {
-            vote = candidate != null
-                    ? new VotoRequest(cargo, "VALIDO", digits.toString())
-                    : new VotoRequest(cargo, "NULO", null);
-        } else {
-            return; // número incompleto: CONFIRMA não faz nada
-        }
+            boolean complete = digits.length() == getTargetDigitCount();
+            if (!(isBlankVote || currentCandidate != null || complete)) return;
+            if (System.nanoTime() < lockedUntilNanos) return;
 
-        if (state == State.VEREADOR) {
-            vereadorVote = vote;
-            state = State.PREFEITO;
-            resetEntry();
-            render();
-        } else {
-            submit(vote);
+            sounds.play(UrnaSound.CONFIRMA);
+            VotoRequest request = buildVotoRequest();
+
+            if (VotingServer.VEREADOR.equals(currentCargo)) {
+                vereadorVote = request;
+                currentCargo = VotingServer.PREFEITO;
+                resetCargoState();
+                publishCurrentState();
+            }
+            else server.submitVote(vereadorVote, request);
         }
     }
 
-    // ================================================================ envio
-
-    private void submit(VotoRequest prefeitoVote) {
-        final Session current = session;
-        final VotoRequest vereador = vereadorVote;
-        state = State.SUBMITTING;
-        render();
-
-        background.execute(() -> {
-            try {
-                server.confirm(current, vereador, prefeitoVote);
-                ui.execute(this::onConfirmed);
-            } catch (RejectedException e) {
-                ui.execute(() -> onFailed(e.getMessage()));
-            } catch (RuntimeException e) {
-                ui.execute(() -> onFailed("Erro inesperado: " + e.getMessage()));
-            }
-        });
+    private int getTargetDigitCount() {
+        return VotingServer.VEREADOR.equals(currentCargo) ? 5 : 2;
     }
 
-    /** "Notifica conclusão" + "Mostra FIM". */
-    private void onConfirmed() {
-        state = State.FINISHED;
-        session = null;
-        vereadorVote = null;
-        render();
-
-        finishTimer = new Timer(FINISH_SCREEN_MILLIS, e -> {
-            if (state == State.FINISHED) {
-                state = State.IDLE;
-                render();
-            }
-        });
-        finishTimer.setRepeats(false);
-        finishTimer.start();
-
-        if (listener != null) listener.onVoteCompleted();
-    }
-
-    private void onFailed(String message) {
-        state = State.IDLE;
-        session = null;
-        vereadorVote = null;
-        resetEntry();
-        display.accept(new VotingScreenModel.Waiting(message));
-        if (listener != null) listener.onVoteFailed(message);
-    }
-
-    // ================================================================ consultas ao servidor
-
-    /** Partido após 2 dígitos (vereador) e candidato quando o número está completo. */
-    private void lookup() {
-        partyName = null;
-        candidate = null;
-        int n = digits.length();
-        if (state == State.VEREADOR) {
-            if (n >= 2) {
-                partyName = server.requestParty(digits.substring(0, 2)).orElse(null);
-            }
-            if (n == VEREADOR_DIGITS) {
-                candidate = server.requestCandidate(VotingServer.VEREADOR, digits.toString()).orElse(null);
-            }
-        } else if (n == PREFEITO_DIGITS) {
-            partyName = server.requestParty(digits.toString()).orElse(null);
-            candidate = server.requestCandidate(VotingServer.PREFEITO, digits.toString()).orElse(null);
-        }
-    }
-
-    // ================================================================ auxiliares
-
-    private boolean isEntryState() {
-        return state == State.VEREADOR || state == State.PREFEITO;
-    }
-
-    private String currentCargo() {
-        return state == State.VEREADOR ? VotingServer.VEREADOR : VotingServer.PREFEITO;
-    }
-
-    private int digitsNeeded() {
-        return state == State.VEREADOR ? VEREADOR_DIGITS : PREFEITO_DIGITS;
-    }
-
-    private void resetEntry() {
+    private void resetCargoState() {
         digits.setLength(0);
-        blank = false;
-        partyName = null;
-        candidate = null;
+        currentCandidate = null;
+        isBlankVote = false;
+        lockedUntilNanos = 0;
+        confirmableShown = false;
     }
 
-    private void stopFinishTimer() {
-        if (finishTimer != null) {
-            finishTimer.stop();
-            finishTimer = null;
+    private void evaluateInput() {
+        if (digits.length() == getTargetDigitCount()) {
+            Optional<CandidateEntity> candidateOpt = server.requestCandidate(currentCargo, digits.toString());
+            currentCandidate = candidateOpt.orElse(null);
         }
+        else currentCandidate = null;
+        publishCurrentState();
     }
 
-    private void render() {
-        display.accept(buildModel());
+    private VotoRequest buildVotoRequest() {
+        if (isBlankVote) return new VotoRequest(currentCargo, "BRANCO", null);
+        if (currentCandidate != null) return new VotoRequest(currentCargo, "VALIDO", currentCandidate.numero());
+
+        return new VotoRequest(currentCargo, "NULO", null);
     }
 
-    private VotingScreenModel buildModel() {
-        return switch (state) {
-            case IDLE -> new VotingScreenModel.Waiting(null);
-            case SUBMITTING -> new VotingScreenModel.Submitting();
-            case FINISHED -> new VotingScreenModel.Finished();
+    private void publishCurrentState() {
+        int digitCount = getTargetDigitCount();
 
-            case VEREADOR, PREFEITO -> {
-                boolean complete = digits.length() == digitsNeeded();
-                String headline = null;
-                String detail = null;
-
-                if (blank) {
-                    headline = "VOTO EM BRANCO";
+        boolean confirmable = isBlankVote || currentCandidate != null || digits.length() == digitCount;
+        if (confirmable && !confirmableShown && !confirmDelay.isZero()) {
+            lockedUntilNanos = System.nanoTime() + confirmDelay.toNanos();
+            UNLOCK_TIMER.schedule(() -> {
+                synchronized (server) {
+                    if (server.isVoterActive() && confirmableShown) publishCurrentState();
                 }
-                else if (complete && candidate == null) {
-                    headline = "VOTO NULO";
-                    detail = partyName != null ? "CANDIDATO INEXISTENTE" : "NÚMERO ERRADO";
-                }
+            }, confirmDelay.toMillis(), TimeUnit.MILLISECONDS);
+        }
+        confirmableShown = confirmable;
+        boolean locked = confirmable && System.nanoTime() < lockedUntilNanos;
 
-                yield new VotingScreenModel.Voting(
-                        state == State.VEREADOR ? "Vereador" : "Prefeito",
-                        digitsNeeded(),
-                        digits.toString(),
-                        candidate != null ? candidate.nome() : null,
-                        partyName,
-                        candidate != null ? candidate.imagemUrl() : null,
-                        headline,
-                        detail
-                );
-            }
-        };
+        String headline = null;
+        String candidateName = null;
+        String partyName = null;
+        String imageUrl = null;
+
+        if (isBlankVote) {
+            headline = "VOTO EM BRANCO";
+        }
+
+        else if (currentCandidate != null) {
+            candidateName = currentCandidate.nome();
+            partyName = currentCandidate.partido();
+            imageUrl = currentCandidate.imagemUrl();
+        }
+
+        else if (digits.length() == digitCount) {
+            headline = "VOTO NULO";
+        }
+
+        server.publishVoterState(new VotingScreenModel.Voting(
+                currentCargo,
+                digitCount,
+                digits.toString(),
+                candidateName,
+                partyName,
+                imageUrl,
+                headline,
+                null,
+                VotingServer.VEREADOR.equals(currentCargo) ? 0 : 1,
+                locked,
+                null,
+                null
+        ));
     }
 }

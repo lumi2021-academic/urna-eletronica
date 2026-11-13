@@ -21,7 +21,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/** Importa apenas os Pokemon que ainda nao existem no Firestore. */
 public final class ImportarPokemons {
 
     private static final String CABECALHO =
@@ -48,6 +47,7 @@ public final class ImportarPokemons {
         if (projeto == null || projeto.isBlank()) {
             throw new IllegalStateException("Defina FIREBASE_PROJECT_ID com o ID real do projeto Firebase.");
         }
+
         String credenciais = System.getenv("GOOGLE_APPLICATION_CREDENTIALS");
         if (credenciais == null || credenciais.isBlank()) {
             throw new IllegalStateException("Defina GOOGLE_APPLICATION_CREDENTIALS com o caminho do JSON da conta de servico.");
@@ -65,6 +65,7 @@ public final class ImportarPokemons {
             for (String id : PARTIDOS_VALIDOS) {
                 partidoRefs.add(db.collection("partidos").document(id));
             }
+
             for (DocumentSnapshot snapshot : db.getAll(partidoRefs.toArray(new DocumentReference[0])).get()) {
                 if (!snapshot.exists()) {
                     throw new IllegalStateException("Falta o partido '" + snapshot.getId()

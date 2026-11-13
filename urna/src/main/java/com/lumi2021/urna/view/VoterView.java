@@ -2,12 +2,14 @@ package com.lumi2021.urna.view;
 
 import com.lumi2021.urna.controller.VoterController;
 import com.lumi2021.urna.platform.InputService;
+import com.lumi2021.urna.platform.events.InputAction;
+import com.lumi2021.urna.platform.events.InputListener;
 
 import javax.swing.*;
 import java.awt.*;
 import java.util.Objects;
 
-public class VoterView extends JFrame {
+public class VoterView extends JFrame implements InputListener {
     private final InputService inputService;
     private VoterController voterController;
 
@@ -31,15 +33,27 @@ public class VoterView extends JFrame {
         voterController.setDisplay(screen::setModel);
     }
 
+    @Override
+    public void onInput(InputAction action) {
+        switch (action) {
+            case CONFIRMA -> voterController.confirm();
+            case CORRIGE -> voterController.correct();
+            case BRANCO -> voterController.blank();
+            case NONE -> { }
+            default -> voterController.digit(InputAction.toInteger(action));
+        }
+    }
+
     private void configurarJanela() {
-        setTitle("Urna Eletrônica - Justiça Eleitoral");
+        setTitle("Urna Eletrônica");
         setSize(650, 720);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLocationRelativeTo(null);
         setResizable(false);
         getContentPane().setBackground(new Color(215, 215, 210));
 
-        ImageIcon icon = new ImageIcon(Objects.requireNonNull(getClass().getResource("/icons/urna-icon.png")));
+        ImageIcon icon = new ImageIcon(Objects.requireNonNull(
+                getClass().getResource("/icons/urna-icon.png")));
         setIconImage(icon.getImage());
     }
 
@@ -49,7 +63,6 @@ public class VoterView extends JFrame {
         screen = new VotingScreen();
         screen.setBorder(BorderFactory.createLineBorder(Color.BLACK, 8));
 
-        // Container que preserva a proporção 800:500 do visor.
         JPanel screenContainer = new JPanel(null) {
             @Override
             public void doLayout() {
@@ -58,10 +71,7 @@ public class VoterView extends JFrame {
                 int availableWidth = getWidth();
                 int availableHeight = getHeight();
 
-                int width = Math.min(
-                        availableWidth,
-                        (int) (availableHeight * aspectRatio)
-                );
+                int width = Math.min(availableWidth, (int) (availableHeight * aspectRatio));
 
                 int height = (int) (width / aspectRatio);
 
@@ -79,14 +89,9 @@ public class VoterView extends JFrame {
 
         JPanel panelTeclado = new JPanel(new BorderLayout(0, 15));
         panelTeclado.setBackground(new Color(0xE8E9E5));
-        panelTeclado.setBorder(
-                BorderFactory.createEmptyBorder(15, 30, 20, 30)
-        );
+        panelTeclado.setBorder(BorderFactory.createEmptyBorder(15, 30, 20, 30));
 
-        JLabel lblTopo = new JLabel(
-                "JUSTIÇA ELEITORAL",
-                SwingConstants.CENTER
-        );
+        JLabel lblTopo = new JLabel("JUSTIÇA ELEITORAL POKEMON", SwingConstants.CENTER);
 
         lblTopo.setForeground(Color.BLACK);
         lblTopo.setFont(new Font("Arial", Font.BOLD, 16));
@@ -98,9 +103,7 @@ public class VoterView extends JFrame {
         JPanel panelCentroTeclado = new JPanel(new BorderLayout(15, 0));
         panelCentroTeclado.setOpaque(false);
 
-        panelCentroTeclado.setBorder(
-                BorderFactory.createEmptyBorder(10, 40, 10, 40)
-        );
+        panelCentroTeclado.setBorder(BorderFactory.createEmptyBorder(10, 40, 10, 40));
 
         // Teclado numérico
         JPanel panelNum = new JPanel(new GridLayout(4, 3, 8, 8));
@@ -134,17 +137,9 @@ public class VoterView extends JFrame {
         panelAcoes.setOpaque(false);
         panelAcoes.setPreferredSize(new Dimension(130, 0));
 
-        btnBranco = criarBotaoAcao(
-                "BRANCO", Color.WHITE, Color.BLACK, 11
-        );
-
-        btnCorrige = criarBotaoAcao(
-                "CORRIGE", new Color(230, 80, 40), Color.BLACK, 11
-        );
-
-        btnConfirma = criarBotaoAcao(
-                "CONFIRMA", new Color(0, 180, 80), Color.BLACK, 10
-        );
+        btnBranco = criarBotaoAcao("BRANCO", Color.WHITE, Color.BLACK, 11);
+        btnCorrige = criarBotaoAcao("CORRIGE", new Color(230, 80, 40), Color.BLACK, 11);
+        btnConfirma = criarBotaoAcao("CONFIRMA", new Color(0, 180, 80), Color.BLACK, 10);
 
         btnBranco.addActionListener(e -> voterController.blank());
         btnCorrige.addActionListener(e -> voterController.correct());
@@ -156,10 +151,7 @@ public class VoterView extends JFrame {
 
         panelCentroTeclado.add(panelAcoes, BorderLayout.EAST);
 
-        panelTeclado.add(
-                panelCentroTeclado,
-                BorderLayout.CENTER
-        );
+        panelTeclado.add(panelCentroTeclado, BorderLayout.CENTER);
 
         // ==================== LAYOUT PRINCIPAL ====================
 
@@ -172,7 +164,6 @@ public class VoterView extends JFrame {
         instalarAtalhosDeTeclado(mainPane);
     }
 
-    /** Teclado do computador: 0-9, B = BRANCO, BACKSPACE = CORRIGE, ENTER = CONFIRMA. */
     private void instalarAtalhosDeTeclado(JComponent root) {
         InputMap im = root.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW);
         ActionMap am = root.getActionMap();

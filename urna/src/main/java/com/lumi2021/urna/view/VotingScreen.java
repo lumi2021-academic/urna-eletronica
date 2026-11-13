@@ -17,10 +17,18 @@ import java.util.concurrent.Executors;
 
 public class VotingScreen extends JPanel {
 
-    private static final Color BG = new Color(250, 250, 245);
-    private static final Color GREEN = new Color(0, 105, 65);
-    private static final Color TEXT = new Color(30, 30, 30);
-    private static final Color WARN = new Color(170, 30, 30);
+    private static final int W = 800, H = 500;
+
+    private static final Color BG = Color.WHITE;
+    private static final Color INK = Color.BLACK;
+    private static final Color MUTED = new Color(90, 90, 90);
+    private static final Color FRAME = new Color(140, 140, 140);
+    private static final Color PLACEHOLDER = new Color(238, 238, 238);
+    private static final Color BAR_DONE = new Color(60, 60, 60);
+    private static final Color BAR_PENDING = new Color(228, 228, 228);
+
+
+    private static final String[] CARGOS = {"Vereador", "Prefeito"};
 
     private static final ExecutorService IMAGE_LOADER = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "candidate-image-loader");
@@ -33,10 +41,22 @@ public class VotingScreen extends JPanel {
 
     private VotingScreenModel model = new VotingScreenModel.Waiting(null);
 
+    private boolean[][] qrCode = null;
+
     public VotingScreen() {
         setBackground(BG);
-        setPreferredSize(new Dimension(800, 500));
+        setPreferredSize(new Dimension(W, H));
         setFocusable(true);
+    }
+
+    public void setQrCode(boolean[][] modules) {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(() -> setQrCode(modules));
+            return;
+        }
+
+        this.qrCode = modules;
+        repaint();
     }
 
     public void setModel(VotingScreenModel model) {
@@ -44,6 +64,7 @@ public class VotingScreen extends JPanel {
             SwingUtilities.invokeLater(() -> setModel(model));
             return;
         }
+
         this.model = model;
         repaint();
     }
@@ -56,189 +77,301 @@ public class VotingScreen extends JPanel {
         try {
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
             g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+            g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
 
-            double scale = Math.min(getWidth() / 800.0, getHeight() / 500.0);
-            g2.translate((getWidth() - 800 * scale) / 2, (getHeight() - 500 * scale) / 2);
+            double scale = Math.min(getWidth() / (double) W, getHeight() / (double) H);
+            g2.translate((getWidth() - W * scale) / 2, (getHeight() - H * scale) / 2);
             g2.scale(scale, scale);
+            g2.setClip(0, 0, W, H);
 
-            paintHeader(g2);
+            g2.setColor(BG);
+            g2.fillRect(0, 0, W, H);
 
-            // Pattern Matching no switch para cada subtipo da interface selada
             switch (model) {
                 case VotingScreenModel.Waiting w -> paintWaiting(g2, w);
                 case VotingScreenModel.Voting v -> paintVoting(g2, v);
-                case VotingScreenModel.Submitting s -> paintCentered(g2, s.message(), 28, TEXT);
+                case VotingScreenModel.Submitting s -> {
+                    g2.setColor(INK);
+                    g2.setFont(UrnaFonts.bold(30));
+                    drawCentered(g2, s.message(), 262);
+                    paintBrand(g2);
+                }
                 case VotingScreenModel.Finished f -> paintFinished(g2);
             }
-        } finally {
+        }
+        finally {
             g2.dispose();
         }
     }
 
-    private void paintHeader(Graphics2D g2) {
-        g2.setColor(GREEN);
-        g2.fillRect(0, 0, 800, 55);
-
-        g2.setColor(Color.WHITE);
-        g2.setFont(new Font("SansSerif", Font.BOLD, 20));
-        g2.drawString("JUSTIÇA ELEITORAL", 24, 35);
-    }
+    // ==================== TELAS ====================
 
     private void paintWaiting(Graphics2D g2, VotingScreenModel.Waiting w) {
-        paintCentered(g2, "AGUARDE", 44, TEXT);
+        g2.setColor(INK);
+        g2.setFont(UrnaFonts.bold(60));
+        drawCentered(g2, "AGUARDE", 262);
 
-        g2.setColor(new Color(90, 90, 90));
-        g2.setFont(new Font("SansSerif", Font.PLAIN, 18));
-        drawCentered(g2, "Aguardando a liberação pelo mesário.", 300);
+        g2.setColor(MUTED);
+        g2.setFont(UrnaFonts.regular(20));
+        drawCentered(g2, "Aguardando a liberação pelo mesário.", 312);
 
         if (w.message() != null) {
-            g2.setColor(WARN);
-            g2.setFont(new Font("SansSerif", Font.BOLD, 18));
-            drawCentered(g2, w.message(), 360);
+            g2.setColor(INK);
+            g2.setFont(UrnaFonts.bold(20));
+            drawCentered(g2, w.message(), 366);
         }
+        else if (qrCode != null) {
+            paintMesarioQr(g2);
+        }
+        paintBrand(g2);
     }
 
     private void paintFinished(Graphics2D g2) {
-        paintCentered(g2, "FIM", 120, TEXT);
+        paintProgress(g2, CARGOS.length);
 
-        g2.setColor(new Color(90, 90, 90));
-        g2.setFont(new Font("SansSerif", Font.PLAIN, 22));
-        drawCentered(g2, "VOTOU", 380);
+        g2.setColor(INK);
+        g2.setFont(UrnaFonts.bold(190));
+        drawCentered(g2, "FIM", 320);
+
+        g2.setFont(UrnaFonts.regular(34));
+        drawRight(g2, "VOTOU", W - 36, 430);
+        paintBrand(g2);
     }
 
     private void paintVoting(Graphics2D g2, VotingScreenModel.Voting v) {
-        g2.setColor(TEXT);
-        g2.setFont(new Font("SansSerif", Font.BOLD, 25));
-        g2.drawString("SEU VOTO PARA", 30, 105);
-
-        g2.setFont(new Font("SansSerif", Font.PLAIN, 22));
-        g2.drawString(v.cargoLabel(), 30, 140);
-
-        g2.setColor(new Color(190, 190, 190));
-        g2.drawLine(30, 160, 770, 160);
+        paintProgress(g2, v.step());
 
         boolean blank = "VOTO EM BRANCO".equals(v.headline());
+        boolean wrongNumber = "VOTO NULO".equals(v.headline());
+        boolean candidate = v.candidateName() != null;
+        boolean majoritarian = "Prefeito".equalsIgnoreCase(v.cargoLabel());
 
-        if (!blank) {
-            g2.setColor(TEXT);
-            g2.setFont(new Font("SansSerif", Font.PLAIN, 17));
-            g2.drawString("Número:", 30, 200);
-
-            int x = 30;
-            int y = 215;
-            int size = 55;
-            int gap = 8;
-
-            for (int i = 0; i < v.digitCount(); i++) {
-                int bx = x + i * (size + gap);
-
-                g2.setColor(Color.WHITE);
-                g2.fillRect(bx, y, size, size);
-
-                g2.setColor(TEXT);
-                g2.setStroke(new BasicStroke(1.5f));
-                g2.drawRect(bx, y, size, size);
-
-                if (i < v.digits().length()) {
-                    String digit = v.digits().substring(i, i + 1);
-                    g2.setFont(new Font("Monospaced", Font.BOLD, 32));
-                    FontMetrics fm = g2.getFontMetrics();
-                    g2.drawString(digit, bx + (size - fm.stringWidth(digit)) / 2, y + 38);
-                }
-            }
-        }
+        // SEU VOTO PARA / Cargo
+        g2.setColor(INK);
+        g2.setFont(UrnaFonts.regular(17));
+        g2.drawString("SEU VOTO PARA", 36, 72);
+        g2.setFont(UrnaFonts.bold(38));
+        g2.drawString(v.cargoLabel(), 36, 114);
 
         if (blank) {
-            g2.setColor(TEXT);
-            g2.setFont(new Font("SansSerif", Font.BOLD, 40));
-            g2.drawString(v.headline(), 30, 260);
-        }
-        else if (v.candidateName() != null) {
-            g2.setColor(TEXT);
-            g2.setFont(new Font("SansSerif", Font.BOLD, 21));
-            g2.drawString("Nome: " + v.candidateName(), 30, 320);
-
-            g2.setFont(new Font("SansSerif", Font.PLAIN, 16));
-            if (v.partyName() != null) {
-                g2.drawString("Partido: " + v.partyName(), 30, 350);
-            }
-            paintPhoto(g2, v.imageUrl());
+            g2.setFont(UrnaFonts.bold(62));
+            g2.drawString("VOTO EM BRANCO", 36, 290);
         }
         else {
-            int y = 320;
+            paintDigitBoxes(g2, v);
 
-            if (v.partyName() != null) {
-                g2.setColor(TEXT);
-                g2.setFont(new Font("SansSerif", Font.PLAIN, 16));
-                g2.drawString("Partido: " + v.partyName(), 30, y);
-                y += 30;
-            }
+            if (candidate) {
+                int y = 266;
+                y = paintField(g2, "Nome:", v.candidateName(), y);
+                if (v.partyName() != null) y = paintField(g2, "Partido:", v.partyName(), y);
+                if (majoritarian && v.viceName() != null) paintField(g2, "Vice-Prefeito:", v.viceName(), y);
 
-            if (v.headline() != null) {
-                g2.setColor(WARN);
-                g2.setFont(new Font("SansSerif", Font.BOLD, 26));
-                if (v.detail() != null) {
-                    g2.drawString(v.detail(), 30, y);
-                    y += 34;
+                paintPhoto(g2, 622, 50, 142, 190, v.imageUrl(), v.cargoLabel());
+                if (majoritarian) {
+                    paintPhoto(g2, 652, 272, 90, 120, v.viceImageUrl(), "Vice-Prefeito");
                 }
-                g2.drawString(v.headline(), 30, y);
+            }
+            else if (wrongNumber) {
+                g2.setColor(INK);
+                g2.setFont(UrnaFonts.regular(24));
+                g2.drawString("NÚMERO ERRADO", 36, 282);
+                g2.setFont(UrnaFonts.bold(62));
+                g2.drawString("VOTO NULO", 36, 352);
             }
             else if (v.digits().isEmpty()) {
-                g2.setColor(new Color(90, 90, 90));
-                g2.setFont(new Font("SansSerif", Font.PLAIN, 16));
-                g2.drawString("Digite o número do candidato.", 30, 310);
+                g2.setColor(MUTED);
+                g2.setFont(UrnaFonts.regular(20));
+                g2.drawString("Digite o número do candidato.", 36, 282);
+            }
+            else if (v.partyName() != null) {
+                paintField(g2, "Partido:", v.partyName(), 266);
             }
         }
 
-        // Rodapé de instruções
-        g2.setColor(new Color(235, 235, 230));
-        g2.fillRect(0, 425, 800, 75);
+        if (v.detail() != null) {
+            g2.setColor(INK);
+            g2.setFont(UrnaFonts.bold(19));
+            g2.drawString(v.detail(), 36, 398);
+        }
 
-        g2.setColor(TEXT);
-        g2.setFont(new Font("SansSerif", Font.PLAIN, 14));
-        g2.drawString("Aperte a tecla:", 25, 444);
-        g2.drawString("VERDE para CONFIRMAR este voto", 25, 462);
-        g2.drawString("LARANJA para REINICIAR este voto", 25, 480);
-        if (v.digits().isEmpty() && !blank) {
-            g2.drawString("BRANCO para votar em branco", 450, 462);
+        paintFooter(g2, v, blank);
+    }
+
+    // ==================== PEÇAS ====================
+
+    private void paintProgress(Graphics2D g2, int current) {
+        int n = CARGOS.length;
+        int h = 30;
+        int w = W / n;
+
+        for (int i = 0; i < n; i++) {
+            boolean done = i < current;
+            boolean active = i == current;
+            int x = i * w;
+
+            g2.setColor(done ? BAR_DONE : active ? BG : BAR_PENDING);
+            g2.fillRect(x, 0, w, h);
+
+            g2.setColor(done ? Color.WHITE : active ? INK : MUTED);
+            g2.setFont(active ? UrnaFonts.bold(16) : UrnaFonts.regular(16));
+            FontMetrics fm = g2.getFontMetrics();
+            String label = (i + 1) + "  " + CARGOS[i];
+            g2.drawString(label, x + 14, (h + fm.getAscent() - fm.getDescent()) / 2);
+        }
+
+        g2.setColor(INK);
+        g2.fillRect(0, h, W, 2);
+        if (current < n) g2.fillRect(current * w, h - 4, w, 6);
+    }
+
+    private void paintDigitBoxes(Graphics2D g2, VotingScreenModel.Voting v) {
+        g2.setColor(INK);
+        g2.setFont(UrnaFonts.regular(20));
+        g2.drawString("Número:", 36, 156);
+
+        int size = 50, gap = 6, y = 168;
+        for (int i = 0; i < v.digitCount(); i++) {
+            int bx = 36 + i * (size + gap);
+
+            g2.setColor(Color.WHITE);
+            g2.fillRect(bx, y, size, size);
+            g2.setColor(INK);
+            g2.setStroke(new BasicStroke(1.5f));
+            g2.drawRect(bx, y, size, size);
+            g2.setStroke(new BasicStroke(1f));
+
+            if (i < v.digits().length()) {
+                String digit = v.digits().substring(i, i + 1);
+                g2.setFont(UrnaFonts.regular(38));
+                FontMetrics fm = g2.getFontMetrics();
+                g2.drawString(digit, bx + (size - fm.stringWidth(digit)) / 2, y + 38);
+            }
         }
     }
 
-    private void paintPhoto(Graphics2D g2, String imageUrl) {
-        final int bx = 560, by = 185, bw = 180, bh = 210;
+    private int paintField(Graphics2D g2, String label, String value, int y) {
+        g2.setColor(INK);
+        g2.setFont(UrnaFonts.regular(22));
+        String text = label + " " + value;
 
-        g2.setColor(new Color(225, 225, 225));
-        g2.fillRect(bx, by, bw, bh);
+        float size = 22;
+        while (size > 14 && g2.getFontMetrics().stringWidth(text) > 570) {
+            size -= 1;
+            g2.setFont(UrnaFonts.regular(size));
+        }
+        g2.drawString(text, 36, y);
+        return y + 34;
+    }
 
+    private void paintPhoto(Graphics2D g2, int x, int y, int w, int h, String imageUrl, String caption) {
         Image img = imageFor(imageUrl);
-        if (img != null) {
-            int iw = img.getWidth(null);
-            int ih = img.getHeight(null);
-            if (iw > 0 && ih > 0) {
-                double s = Math.min((double) bw / iw, (double) bh / ih);
-                int w = (int) (iw * s);
-                int h = (int) (ih * s);
-                g2.drawImage(img, bx + (bw - w) / 2, by + (bh - h) / 2, w, h, null);
-                return;
-            }
+
+        if (img != null && img.getWidth(null) > 0 && img.getHeight(null) > 0) {
+            int iw = img.getWidth(null), ih = img.getHeight(null);
+            double s = Math.min(w / (double) iw, h / (double) ih);
+            int dw = (int) (iw * s), dh = (int) (ih * s);
+            g2.drawImage(img, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh, null);
+        }
+        else {
+            g2.setColor(PLACEHOLDER);
+            g2.fillRect(x, y, w, h);
+            g2.setColor(FRAME);
+            g2.setStroke(new BasicStroke(1f));
+            g2.drawRect(x, y, w, h);
+            g2.setColor(MUTED);
+            g2.setFont(UrnaFonts.regular(13));
+            drawCenteredIn(g2, "FOTO", x, w, y + h / 2 + 5);
         }
 
-        // Silhueta enquanto a foto não carrega (ou se falhar)
-        g2.setColor(new Color(180, 140, 110));
-        g2.fillOval(620, 215, 60, 70);
-        g2.setColor(new Color(55, 85, 125));
-        g2.fillRoundRect(590, 295, 120, 90, 30, 30);
+        g2.setColor(INK);
+        g2.setFont(UrnaFonts.regular(15));
+        drawCenteredIn(g2, caption, x, w, y + h + 20);
     }
 
-    private void paintCentered(Graphics2D g2, String text, int fontSize, Color color) {
-        g2.setColor(color);
-        g2.setFont(new Font("SansSerif", Font.BOLD, fontSize));
-        drawCentered(g2, text, 250 + fontSize / 3);
+    private void paintFooter(Graphics2D g2, VotingScreenModel.Voting v, boolean blank) {
+        g2.setColor(INK);
+        g2.fillRect(0, 424, W, 2);
+
+        if (v.confirmLocked()) {
+            g2.setFont(UrnaFonts.bold(30));
+            g2.drawString("Confira seu voto", 36, 470);
+            paintBrand(g2);
+            return;
+        }
+
+        g2.setFont(UrnaFonts.bold(15));
+        g2.drawString("Aperte a tecla:", 36, 446);
+
+        boolean canConfirm = blank || v.candidateName() != null || "VOTO NULO".equals(v.headline());
+        int y = 466;
+        if (canConfirm) {
+            paintInstruction(g2, 36, y, "VERDE", "para CONFIRMAR este voto");
+            y += 20;
+        }
+        paintInstruction(g2, 36, y, "LARANJA", "para REINICIAR este voto");
+        y += 20;
+
+        if (v.digits().isEmpty() && !blank) {
+            paintInstruction(g2, 36, y, "BRANCO", "para VOTAR EM BRANCO");
+        }
+        paintBrand(g2);
     }
+
+    private void paintInstruction(Graphics2D g2, int x, int y, String key, String rest) {
+        g2.setColor(INK);
+        g2.setFont(UrnaFonts.bold(15));
+        g2.drawString(key, x, y);
+        int kw = g2.getFontMetrics().stringWidth(key);
+        g2.setFont(UrnaFonts.regular(15));
+        g2.drawString(" " + rest, x + kw, y);
+    }
+
+    private void paintBrand(Graphics2D g2) {
+        g2.setColor(INK);
+        g2.setFont(UrnaFonts.bold(13));
+        drawRight(g2, "JUSTIÇA ELEITORAL POKEMON", W - 36, 485);
+    }
+
+    private void paintMesarioQr(Graphics2D g2) {
+        int quiet = 4;
+        int modules = qrCode.length + quiet * 2;
+        int cell = Math.max(1, 130 / modules);
+        int box = cell * modules;
+        int x0 = W - 36 - box, y0 = 462 - box;
+
+        g2.setColor(Color.WHITE);
+        g2.fillRect(x0, y0, box, box);
+        g2.setColor(Color.BLACK);
+
+        for (int r = 0; r < qrCode.length; r++) {
+            for (int c = 0; c < qrCode.length; c++) {
+                if (qrCode[r][c]) g2.fillRect(x0 + (c + quiet) * cell, y0 + (r + quiet) * cell, cell, cell);
+            }
+        }
+        g2.setColor(FRAME);
+        g2.drawRect(x0, y0, box, box);
+
+        g2.setColor(INK);
+        g2.setFont(UrnaFonts.bold(16));
+        drawRight(g2, "Mesário desconectado", x0 - 14, y0 + box / 2 - 4);
+        g2.setColor(MUTED);
+        g2.setFont(UrnaFonts.regular(15));
+        drawRight(g2, "Leia o QR Code para conectar.", x0 - 14, y0 + box / 2 + 17);
+    }
+
+    // ==================== UTILITÁRIOS ====================
 
     private void drawCentered(Graphics2D g2, String text, int baseline) {
+        drawCenteredIn(g2, text, 0, W, baseline);
+    }
+
+    private void drawCenteredIn(Graphics2D g2, String text, int x, int width, int baseline) {
         FontMetrics fm = g2.getFontMetrics();
-        g2.drawString(text, (800 - fm.stringWidth(text)) / 2, baseline);
+        g2.drawString(text, x + (width - fm.stringWidth(text)) / 2, baseline);
+    }
+
+    private void drawRight(Graphics2D g2, String text, int rightX, int baseline) {
+        g2.drawString(text, rightX - g2.getFontMetrics().stringWidth(text), baseline);
     }
 
     private Image imageFor(String url) {
@@ -258,9 +391,9 @@ public class VotingScreen extends JPanel {
                         BufferedImage loaded = ImageIO.read(in);
                         if (loaded != null) images.put(url, loaded);
                     }
-                } catch (Exception ignored) {
-                    // Ignored
                 }
+                catch (Exception ignored) {}
+
                 SwingUtilities.invokeLater(this::repaint);
             });
         }

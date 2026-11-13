@@ -1,12 +1,9 @@
 package com.lumi2021.urna.controller.poolWorker;
 
 import com.lumi2021.urna.application.VotingServer;
-import com.lumi2021.urna.platform.NetworkUtils;
 import com.lumi2021.urna.platform.events.InputAction;
 import com.lumi2021.urna.view.models.MesarioScreenModel;
-import io.javalin.Javalin;
 
-import java.net.SocketException;
 import java.util.function.Consumer;
 
 public class EmbeddedPoolWorkerController implements PoolWorkerController {

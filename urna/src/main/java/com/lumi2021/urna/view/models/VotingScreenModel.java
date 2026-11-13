@@ -33,6 +33,12 @@ public sealed interface VotingScreenModel {
         }
     }
 
+    /**
+     * @param step          índice (a partir de 0) do cargo em votação, para a barra de progresso
+     * @param viceName      nome do vice (só cargos majoritários; null se não houver dado)
+     * @param viceImageUrl  foto do vice (null mostra só o espaço reservado)
+     * @param confirmLocked true durante a pausa de segurança ("Confira seu voto"), em que CONFIRMA é ignorada
+     */
     record Voting(
             String cargoLabel,
             int digitCount,
@@ -41,7 +47,11 @@ public sealed interface VotingScreenModel {
             String partyName,
             String imageUrl,
             String headline,
-            String detail
+            String detail,
+            int step,
+            boolean confirmLocked,
+            String viceName,
+            String viceImageUrl
     ) implements VotingScreenModel {
         public Voting {
             digits = digits == null ? "" : digits;

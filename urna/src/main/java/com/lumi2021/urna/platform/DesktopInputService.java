@@ -11,8 +11,7 @@ public class DesktopInputService implements InputService {
 
     private JFrame window;
 
-    private final CopyOnWriteArrayList<InputListener> listeners =
-            new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<InputListener> listeners = new CopyOnWriteArrayList<>();
 
     private InputMap inputMap;
     private ActionMap actionMap;
@@ -87,8 +86,7 @@ public class DesktopInputService implements InputService {
     }
 
     private void dispatch(InputAction action) {
-        for (InputListener listener : listeners)
-            listener.onInput(action);
+        for (InputListener listener : listeners) listener.onInput(action);
     }
 
     public void emit(InputAction action) {
