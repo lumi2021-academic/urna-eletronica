@@ -7,6 +7,8 @@ import com.lumi2021.urna.infra.firebase.VotoRequest;
 import com.lumi2021.urna.platform.events.InputAction;
 import com.lumi2021.urna.view.models.MesarioScreenModel;
 import com.lumi2021.urna.view.models.VotingScreenModel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.time.LocalTime;
@@ -14,9 +16,14 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 public final class VotingServer {
+
+    private static final Logger log = LoggerFactory.getLogger(VotingServer.class);
 
     public static final String VEREADOR = "VEREADOR";
     public static final String PREFEITO = "PREFEITO";
@@ -24,6 +31,7 @@ public final class VotingServer {
     private static final ZoneId BRASILIA = ZoneId.of("America/Sao_Paulo");
     private static final LocalTime CLOSING_TIME = LocalTime.of(17, 0);
     private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm:ss");
+    private static final long FINISHED_SCREEN_MILLIS = 4000;
 
     public enum MesarioStep {
         ENTER_ID,
@@ -39,8 +47,6 @@ public final class VotingServer {
         public RejectedException(String message) { super(message); }
     }
 
-    private Session currentUrnaSession;
-
     private final CandidateRepository candidates;
     private final ElectorRepository electors;
     private final VotingGateway gateway;
@@ -48,7 +54,17 @@ public final class VotingServer {
     private final Set<String> voted = ConcurrentHashMap.newKeySet();
     private final Set<String> inProgress = ConcurrentHashMap.newKeySet();
 
-    // Estado da Mesa do Mesário no Servidor
+    private final ScheduledExecutorService io = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "voting-server-io");
+        t.setDaemon(true);
+        return t;
+    });
+    private boolean clockTickerStarted = false;
+
+    private boolean electionOpened = false;
+    private Session voterSession = null;
+    private boolean submitting = false;
+
     private MesarioStep mesarioStep = MesarioStep.ENTER_ID;
     private final StringBuilder idInput = new StringBuilder();
     private String currentVoter = null;
@@ -59,9 +75,11 @@ public final class VotingServer {
     private boolean released = false;
     private Clock clock = Clock.system(BRASILIA);
 
-    // Callbacks de Output para as views remotas
     private Consumer<MesarioScreenModel> mesarioStateListener;
     private Consumer<VotingScreenModel> voterScreenListener;
+    private Runnable voterResetListener;
+    private Runnable closedListener;
+    private Runnable partialBulletinListener;
 
     public VotingServer(CandidateRepository candidates, ElectorRepository electors, VotingGateway gateway) {
         this.candidates = candidates;
@@ -69,17 +87,41 @@ public final class VotingServer {
         this.gateway = gateway;
     }
 
-    public void setMesarioStateListener(Consumer<MesarioScreenModel> listener) {
+    public synchronized void setMesarioStateListener(Consumer<MesarioScreenModel> listener) {
         this.mesarioStateListener = listener;
         publishMesarioState();
     }
 
-    public void setVoterScreenListener(Consumer<VotingScreenModel> listener) {
+    public synchronized void setVoterScreenListener(Consumer<VotingScreenModel> listener) {
         this.voterScreenListener = listener;
         publishVoterState(new VotingScreenModel.Waiting(null));
     }
 
-    // ==================== PROCESSAMENTO DE INPUT DO MESÁRIO ====================
+    public synchronized void setVoterResetListener(Runnable listener) {
+        this.voterResetListener = listener;
+    }
+
+    public synchronized void setClosedListener(Runnable listener) {
+        this.closedListener = listener;
+    }
+
+    public synchronized void setPartialBulletinListener(Runnable listener) {
+        this.partialBulletinListener = listener;
+    }
+
+    public synchronized void startClockTicker() {
+        if (clockTickerStarted) return;
+        clockTickerStarted = true;
+
+        io.scheduleWithFixedDelay(() -> {
+            try {
+                synchronized (this) { publishMesarioState(); }
+            }
+            catch (Exception e) {
+                log.warn("Falha ao atualizar o relógio do mesário", e);
+            }
+        }, 1, 1, TimeUnit.SECONDS);
+    }
 
     public synchronized void handleMesarioInput(InputAction input) {
         clearNotice();
@@ -90,6 +132,7 @@ public final class VotingServer {
                  KEY_9 -> pressDigit(InputAction.toInteger(input));
             case CORRIGE -> pressCorrige();
             case CONFIRMA -> pressConfirma();
+            default -> { }
         }
         publishMesarioState();
     }
@@ -116,9 +159,18 @@ public final class VotingServer {
                     }
                 }
 
-                else {
-                    setNotice("Opção inválida.");
+                else if (digit == 3) {
+                    Runnable listener = partialBulletinListener;
+                    if (listener == null) {
+                        setNotice("Boletim indisponível.");
+                    }
+                    else {
+                        setNotice("Gerando boletim parcial...");
+                        io.execute(listener);
+                    }
                 }
+
+                else setNotice("Opção inválida.");
             }
 
             default -> {}
@@ -139,11 +191,9 @@ public final class VotingServer {
             }
 
             case AUTHORIZED -> {
-                if (!released) {
-                    setNotice("Voto em andamento.");
-                    break;
-                }
-                cancelCurrentSession();
+                if (!released) setNotice("Aguarde.");
+                else if (submitting) setNotice("Voto em andamento.");
+                else cancelCurrentSession();
             }
 
             case MENU -> mesarioStep = MesarioStep.ENTER_ID;
@@ -158,9 +208,11 @@ public final class VotingServer {
                 if (idInput.length() < ID_LENGTH) {
                     setNotice("Título incompleto.");
                 }
+
                 else if (voted.contains(idInput.toString())) {
                     setNotice("Este eleitor já votou.");
                 }
+
                 else {
                     mesarioStep = MesarioStep.CONFIRM_ID;
                 }
@@ -168,29 +220,10 @@ public final class VotingServer {
 
             case CONFIRM_ID -> {
                 String electorId = idInput.toString();
-
-                try {
-                    currentUrnaSession = authorize(electorId);
-                    currentVoter = electorId;
-                    released = true;
-                    mesarioStep = MesarioStep.AUTHORIZED;
-
-                    publishVoterState(new VotingScreenModel.Voting(
-                            VEREADOR,
-                            5,
-                            "",
-                            null,
-                            null,
-                            null,
-                            null,
-                            null)
-                    );
-
-                } catch (RejectedException e) {
-                    setNotice(e.getMessage());
-                    mesarioStep = MesarioStep.ENTER_ID;
-                    idInput.setLength(0);
-                }
+                currentVoter = electorId;
+                released = false;
+                mesarioStep = MesarioStep.AUTHORIZED;
+                io.execute(() -> completeAuthorization(electorId));
             }
 
             case CLOSE_ID -> {
@@ -205,9 +238,45 @@ public final class VotingServer {
                 else {
                     idInput.setLength(0);
                     mesarioStep = MesarioStep.CLOSED;
+                    publishVoterState(new VotingScreenModel.Waiting("Votação encerrada."));
+                    Runnable listener = closedListener;
+                    if (listener != null) io.execute(listener);
                 }
             }
             default -> {}
+        }
+    }
+
+    private void completeAuthorization(String electorId) {
+        Session session = null;
+        String error = null;
+        try {
+            session = authorize(electorId);
+        }
+        catch (RejectedException e) {
+            error = e.getMessage();
+        }
+        catch (Exception e) {
+            log.error("Falha inesperada ao autorizar eleitor", e);
+            error = describe(e);
+        }
+
+        synchronized (this) {
+            if (session == null) {
+                currentVoter = null;
+                idInput.setLength(0);
+                mesarioStep = MesarioStep.ENTER_ID;
+                setNotice(error);
+                publishMesarioState();
+                return;
+            }
+
+            voterSession = session;
+            released = true;
+            submitting = false;
+            notifyVoterReset();
+            publishVoterState(initialVotingScreen(null));
+            publishMesarioState();
         }
     }
 
@@ -217,27 +286,27 @@ public final class VotingServer {
             currentVoter = null;
         }
 
+        voterSession = null;
+        submitting = false;
         released = false;
         idInput.setLength(0);
         mesarioStep = MesarioStep.ENTER_ID;
         setNotice("Liberação cancelada.");
+        notifyVoterReset();
         publishMesarioState();
         publishVoterState(new VotingScreenModel.Waiting(null));
     }
 
-    // ==================== PROCESSAMENTO DE VOTAÇÃO E SESSÃO ====================
-
     public synchronized void iniciarSessaoEleitoral(String eleicaoID) throws Exception {
-        if (currentUrnaSession != null) return;
+        if (electionOpened) return;
 
         try {
             gateway.abrirEleicao(eleicaoID);
-            String sessionId = gateway.abrirSessao();
-            this.currentUrnaSession = new Session(sessionId, null);
-            System.out.println("Sessão eleitoral iniciada no gateway com ID: " + sessionId);
+            electionOpened = true;
+            log.info("Eleição {} aberta no gateway.", eleicaoID);
         }
         catch (Exception e) {
-            throw new Exception("Falha ao abrir a sessão eleitoral no gateway: " + describe(e), e);
+            throw new Exception("Falha ao abrir a eleição no gateway: " + describe(e), e);
         }
     }
 
@@ -257,30 +326,69 @@ public final class VotingServer {
         }
     }
 
-    public void confirm(Session session, VotoRequest vereador, VotoRequest prefeito) throws RejectedException {
-        if (session == null || !inProgress.contains(session.electorId())) {
-            throw new RejectedException("Sessão de votação não está ativa.");
-        }
-        try {
-            publishVoterState(new VotingScreenModel.Submitting());
-            gateway.registrar(session.sessionId(), List.of(vereador, prefeito));
+    public synchronized boolean isVoterActive() {
+        return released && voterSession != null && !submitting;
+    }
 
+    public synchronized void submitVote(VotoRequest vereador, VotoRequest prefeito) {
+        if (!isVoterActive()) return;
+
+        submitting = true;
+        Session session = voterSession;
+        publishVoterState(new VotingScreenModel.Submitting());
+
+        io.execute(() -> {
+            try {
+                confirm(session, vereador, prefeito);
+            }
+            catch (RejectedException e) {
+                log.error("Falha ao registrar voto: {}", e.getMessage());
+                synchronized (this) {
+                    submitting = false;
+                    setNotice(e.getMessage());
+                    notifyVoterReset();
+                    publishMesarioState();
+                    publishVoterState(initialVotingScreen("Não foi possível registrar. Tente novamente."));
+                }
+            }
+        });
+    }
+
+    public void confirm(Session session, VotoRequest vereador, VotoRequest prefeito) throws RejectedException {
+
+        if (session == null || session.electorId() == null || !inProgress.contains(session.electorId()))
+            throw new RejectedException("Sessão de votação não está ativa.");
+
+        try {
+            gateway.registrar(session.sessionId(), List.of(vereador, prefeito));
+        }
+        catch (Exception e) {
+            throw new RejectedException("Falha ao registrar voto: " + describe(e));
+        }
+
+        synchronized (this) {
             voted.add(session.electorId());
             inProgress.remove(session.electorId());
             votesCount++;
 
+            voterSession = null;
             currentVoter = null;
             released = false;
+            submitting = false;
             idInput.setLength(0);
             mesarioStep = MesarioStep.ENTER_ID;
             setNotice("Voto registrado.");
 
+            notifyVoterReset();
             publishMesarioState();
             publishVoterState(new VotingScreenModel.Finished());
-        } catch (Exception e) {
-            inProgress.remove(session.electorId());
-            publishVoterState(new VotingScreenModel.Waiting("Falha no registro do voto."));
-            throw new RejectedException("Falha ao registrar voto: " + describe(e));
+            io.schedule(this::showWaitingAfterFinish, FINISHED_SCREEN_MILLIS, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    private synchronized void showWaitingAfterFinish() {
+        if (!released && mesarioStep != MesarioStep.CLOSED) {
+            publishVoterState(new VotingScreenModel.Waiting(null));
         }
     }
 
@@ -298,13 +406,14 @@ public final class VotingServer {
 
     public synchronized boolean cancelSession(Session session) {
         if (session == null || currentVoter == null || !currentVoter.equals(session.electorId())) return false;
-        if (mesarioStep == MesarioStep.CLOSED) return false;
+        if (mesarioStep == MesarioStep.CLOSED || submitting) return false;
 
         cancelCurrentSession();
         return true;
     }
 
-    // ==================== PUBLICAÇÃO DE ESTADO (OUTPUT) ====================
+    public synchronized int votesCount() { return votesCount; }
+    public synchronized MesarioStep mesarioStep() { return mesarioStep; }
 
     private void publishMesarioState() {
         if (mesarioStateListener == null) return;
@@ -332,7 +441,8 @@ public final class VotingServer {
                 if (released) {
                     prompt = "Urna liberada: " + formatId(currentVoter == null ? "" : currentVoter);
                     line2 = "Aguardando voto (CORRIGE cancela)";
-                } else {
+                }
+                else {
                     prompt = "Aguarde: verificando título";
                     line2 = formatId(currentVoter == null ? "" : currentVoter);
                 }
@@ -341,7 +451,7 @@ public final class VotingServer {
 
             case MENU -> {
                 prompt = "Outras opções";
-                line2 = "1-Voltar  2-Encerrar votação";
+                line2 = "1-Voltar 2-Encerrar 3-Parcial";
             }
 
             case CLOSE_ID -> {
@@ -370,13 +480,18 @@ public final class VotingServer {
         mesarioStateListener.accept(state);
     }
 
-    public void publishVoterState(VotingScreenModel model) {
-        if (voterScreenListener != null) {
-            voterScreenListener.accept(model);
-        }
+    public synchronized void publishVoterState(VotingScreenModel model) {
+        if (voterScreenListener != null) voterScreenListener.accept(model);
     }
 
-    // ==================== UTILITÁRIOS ====================
+    private void notifyVoterReset() {
+        if (voterResetListener != null) voterResetListener.run();
+    }
+
+    private static VotingScreenModel.Voting initialVotingScreen(String detail) {
+        return new VotingScreenModel.Voting(VEREADOR, 5, "", null, null,
+                null, null, detail, 0, false, null, null);
+    }
 
     private void setNotice(String text) { this.noticeText = text; }
     private void clearNotice() { this.noticeText = null; }
@@ -410,17 +525,17 @@ public final class VotingServer {
         return message == null || message.isBlank() ? e.getClass().getSimpleName() : message;
     }
 
-    public void setTotalVoters(int total) {
+    public synchronized void setTotalVoters(int total) {
         this.totalVoters = Math.max(0, total);
         publishMesarioState();
     }
 
-    public void setPresidentId(String id) throws Exception {
+    public synchronized void setPresidentId(String id) throws Exception {
         if (!electors.isElectorIdValid(id)) throw new Exception("Titulo eleitoral do presidente é inválido!");
         this.presidentId = id.replaceAll("\\D", "");
     }
 
-    public void setClock(Clock clock) {
+    public synchronized void setClock(Clock clock) {
         this.clock = clock;
         publishMesarioState();
     }

@@ -1,15 +1,20 @@
 package com.lumi2021.urna.application;
 
+import com.lumi2021.urna.domain.CandidateRepository;
+import com.lumi2021.urna.domain.models.ApuracaoResult;
+import com.lumi2021.urna.domain.models.ApuracaoResult.CargoResult;
 import com.lumi2021.urna.domain.models.VoteEntry;
 import com.lumi2021.urna.domain.models.bulletinDocument.BulletinDocument;
 import com.lumi2021.urna.domain.models.bulletinDocument.BulletinElement;
 import com.lumi2021.urna.domain.models.bulletinDocument.BulletinLine;
 import com.lumi2021.urna.domain.models.bulletinDocument.BulletinTextMode;
 
-import java.awt.*;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 
 public class BallotBox {
 
@@ -28,12 +33,18 @@ public class BallotBox {
         String municipality,
         int municipalityCode,
         LocalDateTime openingDateTime,
-        LocalDateTime closingDataTime,
+        LocalDateTime closingDateTime,
         int electoralZon,
         int section,
         int eligibleVoters
     ) {
-
+        this.municipality = municipality;
+        this.municipalityCode = municipalityCode;
+        this.openingDateTime = openingDateTime;
+        this.closingDataTime = closingDateTime;
+        this.electoralZone = electoralZon;
+        this.section = section;
+        this.eligibleVoters = eligibleVoters;
     }
 
     public String getMunicipality(){
@@ -60,40 +71,79 @@ public class BallotBox {
         return eligibleVoters;
     }
 
-    public BulletinDocument emitBulletin(){
+
+    public BulletinDocument emitBulletin(ApuracaoResult result, CandidateRepository candidates, LocalDateTime closing) {
+        return emitBulletin(result, candidates, closing, false);
+    }
+
+    public BulletinDocument emitBulletin(
+            ApuracaoResult result,
+            CandidateRepository candidates,
+            LocalDateTime closing, boolean partial
+    ) {
         var builder = new BulletinBuilder();
+        DateTimeFormatter date = DateTimeFormatter.ofPattern("dd/MM/yyyy");
+        DateTimeFormatter time = DateTimeFormatter.ofPattern("HH:mm:ss");
 
         builder.center("1a. VIA", BulletinTextMode.Bold);
         builder.left("");
-        builder.left("");
 
         builder.center("Justiça Eleitoral", BulletinTextMode.Bold);
-        builder.center("Tribunal Regional Eleitoral [BA]");
+        if (municipality != null && !municipality.isBlank()) builder.center(municipality);
         builder.left("");
 
-        builder.center("Boletin de Urna");
+        builder.center(partial ? "Boletim de Urna - PARCIAL" : "Boletim de Urna", partial ? BulletinTextMode.Bold : BulletinTextMode.Normal);
+        if (partial) builder.center("(votação em andamento)");
         builder.left("");
 
-        builder.center("Eleições gerais 2026");
-        builder.center("1° Turno");
-        builder.center("(25/10/2026)");
+        builder.center("Eleições municipais " + closing.getYear());
+        builder.center("(" + closing.format(date) + ")");
+        builder.left("");
+
+        if (eligibleVoters > 0)
+            builder.row(new int[] { 28, 12 }, "Eleitores aptos", builder.padLeft(String.valueOf(eligibleVoters), 12));
+
+        if (openingDateTime != null)
+            builder.row(new int[] { 20, 20 }, "Abertura", builder.padLeft(openingDateTime.format(time), 20));
+
+        builder.row(new int[] { 20, 20 }, partial ? "Emitido em" : "Encerramento", builder.padLeft(closing.format(time), 20));
         builder.left("");
 
         builder.fillLine('=');
+
+        for (Map.Entry<String, CargoResult> entry : result.porCargo().entrySet()) {
+            CargoResult cargo = entry.getValue();
+            builder.left("");
+            builder.centerFill(entry.getKey(), '-', BulletinTextMode.Bold);
+
+            builder.row(new int[] { 23, 1, 8, 1, 7 },
+                    "Nome do candidato", "",
+                    builder.padLeft("Num cand", 8), "",
+                    builder.padLeft("Votos", 7));
+
+            List<Map.Entry<String, Long>> ranking = new ArrayList<>(cargo.votosPorNumero().entrySet());
+            ranking.sort(Map.Entry.<String, Long>comparingByValue().reversed()
+                    .thenComparing(Map.Entry.comparingByKey()));
+
+            for (var candidate : ranking) {
+                String name = candidates.buscarPorNumero(entry.getKey(), candidate.getKey())
+                        .map(c -> c.nome().toUpperCase())
+                        .orElse("(INATIVO)");
+                builder.row(new int[] { 23, 1, 8, 1, 7 },
+                        name, "",
+                        builder.padLeft(candidate.getKey(), 8), "",
+                        builder.padLeft(String.valueOf(candidate.getValue()), 7));
+            }
+
+            builder.fillLine('-');
+            builder.row(new int[] { 28, 12 }, "Votos válidos", builder.padLeft(String.valueOf(cargo.validos()), 12));
+            builder.row(new int[] { 28, 12 }, "Votos em branco", builder.padLeft(String.valueOf(cargo.brancos()), 12));
+            builder.row(new int[] { 28, 12 }, "Votos nulos", builder.padLeft(String.valueOf(cargo.nulos()), 12));
+            builder.row(BulletinTextMode.Bold, new int[] { 28, 12 }, "Total", builder.padLeft(String.valueOf(cargo.total()), 12));
+        }
+
         builder.left("");
-
-        builder.centerFill("PRESIDENTE", '-');
-
-        builder.row(new int[] { 25, 1, 8, 1, 5 },
-            "Nome do candidato", "",
-            builder.padLeft("Num cand", 8), "",
-            builder.padLeft("Votos", 5));
-
-        builder.row(new int[] { 2, 30, 2, 6 }, "", "LULA", "13", builder.padLeft("0177", 6) );
-        builder.row(new int[] { 2, 30, 2, 6 }, "", "FLAVIO BOLSONALRO", "22", builder.padLeft("0068", 6));
-
-        builder.fillLine('-');
-
+        builder.fillLine('=');
 
         return builder.toDocument();
     }
@@ -144,9 +194,7 @@ public class BallotBox {
 
             int totalWidth = 0;
             for (int width : widths) {
-                if (width < 0) {
-                    throw new IllegalArgumentException("A largura de uma coluna não pode ser negativa.");
-                }
+                if (width < 0) throw new IllegalArgumentException("A largura de uma coluna não pode ser negativa.");
                 totalWidth += width;
             }
 

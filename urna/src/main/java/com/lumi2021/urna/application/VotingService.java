@@ -23,18 +23,10 @@ public class VotingService {
         registro.abrirEleicao(eleicaoId);
     }
 
-    public ConfirmacaoVotacao registrar(String sessaoId, List<VotoRequest> votos) {
-        try {
-            return registro.registrar(new VotacaoRequest(sessaoId, votos));
-        }
-        catch (Exception e) {
-            System.err.println(e);
-            System.exit(1);
-            return null;
-        }
+    public ConfirmacaoVotacao registrar(String sessaoId, List<VotoRequest> votos) throws Exception {
+        return registro.registrar(new VotacaoRequest(sessaoId, votos));
     }
 
-    /** Adapta este serviço à porta usada pelo {@link VotingServer}. */
     public VotingGateway asGateway() {
         return new VotingGateway() {
             @Override
@@ -47,9 +39,8 @@ public class VotingService {
                 VotingService.this.abrirEleicao(eleicaoId);
             }
 
-
             @Override
-            public void registrar(String sessaoId, List<VotoRequest> votos) {
+            public void registrar(String sessaoId, List<VotoRequest> votos) throws Exception {
                 VotingService.this.registrar(sessaoId, votos);
             }
         };

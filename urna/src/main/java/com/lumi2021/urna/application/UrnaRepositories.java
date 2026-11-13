@@ -24,7 +24,6 @@ public final class UrnaRepositories {
         this.eleitores = eleitores;
     }
 
-    /** Baixa o cadastro do Firestore (candidatos, partidos e eleitores) ao iniciar a urna. */
     public static UrnaRepositories carregarNaInicializacao(FirebaseConnection firebase) throws Exception {
         return aPartirDoSnapshot(new FirestoreUrnaSnapshotService(
                 firebase.firestore(), firebase.eleicaoId()).carregar());

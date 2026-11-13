@@ -12,4 +12,15 @@ public class BulletinDocument {
     public List<BulletinElement> elements() {
         return elements;
     }
+
+    /** Versão em texto puro (uma linha por elemento), para console e arquivo. */
+    public String toText() {
+        StringBuilder sb = new StringBuilder();
+        for (BulletinElement element : elements) {
+            if (element instanceof BulletinLine line) {
+                sb.append(line.content().stripTrailing()).append('\n');
+            }
+        }
+        return sb.toString();
+    }
 }

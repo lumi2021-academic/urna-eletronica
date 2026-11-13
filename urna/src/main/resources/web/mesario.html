@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Terminal do Mesário</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #d7d7d2; font-family: Arial, sans-serif; display: flex; justify-content: center; }
+  main { width: 100%; max-width: 440px; padding: 16px; }
+  h1 { font-size: 15px; text-align: center; margin: 4px 0 12px; letter-spacing: .5px; }
+  .lcd { background: linear-gradient(#b9c7ab, #a9b89b); border: 8px solid #2b2b2b; outline: 2px solid #111;
+         padding: 14px 8px; font-family: "Courier New", monospace; font-weight: bold; color: #26301f;
+         font-size: min(3.3vw, 14.5px); line-height: 1.9; white-space: pre; overflow: hidden; }
+  .leds { display: flex; gap: 18px; justify-content: center; margin: 12px 0; font-size: 11px; font-weight: bold; }
+  .leds span { display: inline-flex; align-items: center; gap: 6px; }
+  .led { width: 14px; height: 14px; border-radius: 50%; background: #6b6b6b; border: 1px solid #333; }
+  .led.on.y { background: #e0a020; } .led.on.g { background: #2ecc71; }
+  .pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  button { height: 56px; font-size: 20px; font-weight: bold; border: 0; border-radius: 4px; color: #fff; background: #141414; }
+  button:active { filter: brightness(1.6); }
+  button:disabled { opacity: .35; }
+  .corrige { background: #e65028; color: #000; font-size: 12px; }
+  .confirma { background: #00b450; color: #000; font-size: 12px; }
+  .status { text-align: center; font-size: 12px; margin-top: 12px; color: #444; min-height: 16px; }
+  .status.err { color: #a01e1e; }
+  .linkbtn { display: block; margin: 12px auto 0; background: none; color: #1d4e89; height: auto; font-size: 13px; text-decoration: underline; }
+  #boletim { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; padding: 12px; }
+  #boletim.open { display: flex; }
+  #boletim .sheet { background: #fff; width: 100%; max-width: 420px; max-height: 92vh; display: flex; flex-direction: column; border-radius: 4px; }
+  #boletim pre { margin: 0; padding: 14px; overflow: auto; font-family: "Courier New", monospace; font-size: clamp(8px, 2.4vw, 12px); line-height: 1.35; }
+  #boletim button { height: 44px; border-radius: 0 0 4px 4px; font-size: 15px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>JUSTIÇA ELEITORAL — TERMINAL DO MESÁRIO</h1>
+  <div class="lcd" id="lcd"> </div>
+  <div class="leds">
+    <span><i class="led y" id="ledAguarde"></i>AGUARDE</span>
+    <span><i class="led g" id="ledLiberado"></i>LIBERADO</span>
+  </div>
+  <div class="pad" id="pad"></div>
+  <div class="status" id="status"></div>
+  <button class="linkbtn" id="btnBoletim" hidden>Ver último boletim</button>
+</main>
+<div id="boletim"><div class="sheet"><pre id="boletimTexto"></pre><button id="fecharBoletim">Fechar</button></div></div>
+<script>
+  const token = new URLSearchParams(location.search).get('token') || '';
+  const q = '?token=' + encodeURIComponent(token);
+  const pad = document.getElementById('pad');
+  const statusEl = document.getElementById('status');
+  const buttons = [];
+
+  function add(label, key, cls) {
+    const b = document.createElement('button');
+    b.textContent = label; if (cls) b.className = cls;
+    b.addEventListener('click', () => send(key));
+    pad.appendChild(b); buttons.push(b);
+  }
+  for (let n = 1; n <= 9; n++) add(String(n), 'KEY_' + n);
+  add('CORRIGE', 'CORRIGE', 'corrige'); add('0', 'KEY_0'); add('CONFIRMA', 'CONFIRMA', 'confirma');
+
+  let seenBulletin = null;
+  async function showBulletin() {
+    try {
+      const r = await fetch('/api/bulletin' + q, { cache: 'no-store' });
+      document.getElementById('boletimTexto').textContent = await r.text();
+      document.getElementById('boletim').classList.add('open');
+    } catch (e) { setStatus('Não foi possível carregar o boletim.', true); }
+  }
+  document.getElementById('btnBoletim').addEventListener('click', showBulletin);
+  document.getElementById('fecharBoletim').addEventListener('click', () => document.getElementById('boletim').classList.remove('open'));
+
+  async function send(key) {
+    try {
+      const r = await fetch('/api/input/' + key + q, { method: 'POST' });
+      if (r.status === 401) return setStatus('Token inválido. Abra o link exibido no console da urna.', true);
+      if (!r.ok) return setStatus('Falha ao enviar tecla (' + r.status + ').', true);
+      setStatus(''); refresh();
+    } catch (e) { setStatus('Sem conexão com a urna.', true); }
+  }
+
+  function setStatus(msg, err) { statusEl.textContent = msg; statusEl.className = 'status' + (err ? ' err' : ''); }
+
+  async function refresh() {
+    try {
+      const r = await fetch('/api/state' + q, { cache: 'no-store' });
+      if (r.status === 401) return setStatus('Token inválido. Abra o link exibido no console da urna.', true);
+      const s = await r.json();
+      document.getElementById('lcd').textContent = s.line1 + '\n' + s.line2;
+      document.getElementById('ledAguarde').classList.toggle('on', s.aguarde);
+      document.getElementById('ledLiberado').classList.toggle('on', s.liberado);
+      buttons.forEach(b => b.disabled = !s.teclado);
+      document.getElementById('btnBoletim').hidden = !(s.boletim > 0);
+      // Um boletim novo (pedido pelo menu ou emitido no encerramento) abre sozinho.
+      if (seenBulletin === null) seenBulletin = s.boletim;
+      else if (s.boletim > seenBulletin) { seenBulletin = s.boletim; showBulletin(); }
+      if (statusEl.className.indexOf('err') >= 0) setStatus('');
+    } catch (e) { setStatus('Sem conexão com a urna.', true); }
+  }
+
+  const keymap = { Enter: 'CONFIRMA', Backspace: 'CORRIGE' };
+  document.addEventListener('keydown', ev => {
+    if (document.getElementById('boletim').classList.contains('open')) { if (ev.key === 'Escape') document.getElementById('boletim').classList.remove('open'); return; }
+    if (/^[0-9]$/.test(ev.key)) send('KEY_' + ev.key);
+    else if (keymap[ev.key]) { ev.preventDefault(); send(keymap[ev.key]); }
+  });
+
+  refresh(); setInterval(refresh, 500);
+</script>
+</body>
+</html>
